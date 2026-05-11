@@ -222,11 +222,16 @@ class LLMJudge:
         try:
             judgment = await self._call_judge_llm(prompt, persona=persona)
             score_value, reasoning = self._parse_judgment(judgment)
-            
+
             score = {
                 "score": score_value,  # 0-1 scale
                 "reasoning": reasoning,
-                "criterion": criterion_name
+                "criterion": criterion_name,
+                # Save the raw prompt and raw model output so a grader can
+                # inspect exactly what was sent and returned.
+                "prompt": prompt,
+                "raw_output": judgment,
+                "persona_system": persona["system"] if persona else None,
             }
         except Exception as e:
             self.logger.error(f"Error judging criterion {criterion_name}: {e}")

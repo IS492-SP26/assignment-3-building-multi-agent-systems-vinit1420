@@ -404,6 +404,47 @@ def main():
         5. **Safety** checks ensure appropriate content
         """)
 
+    # LLM-as-Judge results panel (reads the latest judge_only_result.json).
+    st.divider()
+    st.markdown("### ⚖️ LLM-as-a-Judge Results (latest representative run)")
+    judge_path = Path("outputs/judge_only_result.json")
+    if not judge_path.exists():
+        st.info(
+            "No judge results yet. Run `python scripts/judge_only.py` to score "
+            "the saved sample session, or `python main.py --mode evaluate` for "
+            "the full batch."
+        )
+    else:
+        import json as _json
+        with open(judge_path, encoding="utf-8") as _f:
+            jr = _json.load(_f)
+        ev = jr.get("evaluation", {})
+        st.caption(f"Query: *{jr.get('query','')}*")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Overall (mean)", f"{ev.get('overall_score', 0):.2f}")
+        for i, (pname, pscore) in enumerate(ev.get("per_persona_scores", {}).items()):
+            (c2 if i == 0 else c3).metric(f"{pname}", f"{pscore:.2f}")
+
+        rows = []
+        for cname, cdata in ev.get("criterion_scores", {}).items():
+            row = {"criterion": cname, "mean": round(cdata.get("score", 0), 2)}
+            for pname, pdata in cdata.get("by_persona", {}).items():
+                row[pname] = round(pdata.get("score", 0), 2)
+            rows.append(row)
+        if rows:
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+        with st.expander("Show raw judge prompts and model outputs", expanded=False):
+            for cname, cdata in ev.get("criterion_scores", {}).items():
+                st.markdown(f"#### `{cname}`")
+                for pname, pdata in cdata.get("by_persona", {}).items():
+                    st.markdown(f"**Persona:** `{pname}`  ·  **Score:** `{pdata.get('score',0)}`")
+                    if pdata.get("prompt"):
+                        st.code(pdata["prompt"], language="markdown")
+                    if pdata.get("raw_output"):
+                        st.text(pdata["raw_output"][:1500])
+                    st.divider()
+
     # Safety log (if enabled)
     if st.session_state.show_safety_log:
         st.divider()

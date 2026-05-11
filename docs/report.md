@@ -173,12 +173,16 @@ full agent transcript in `outputs/sample_session.json`):
 
 | Criterion          | Mean  | academic_reviewer | end_user |
 |--------------------|:-----:|:-----------------:|:--------:|
-| relevance          | 0.75  |       0.70        |   0.80   |
-| evidence_quality   | 0.20  |       0.40        |   0.00   |
-| factual_accuracy   | 0.60  |       0.60        |   0.60   |
+| relevance          | 0.65  |       0.60        |   0.70   |
+| evidence_quality   | 0.25  |       0.00        |   0.50   |
+| factual_accuracy   | 0.65  |       0.60        |   0.70   |
 | safety_compliance  | 1.00  |       1.00        |   1.00   |
-| clarity            | 0.40  |       0.80        |   0.00   |
-| **overall (weighted)** | **0.568** | **0.665** | **0.470** |
+| clarity            | 0.80  |       0.80        |   0.80   |
+| **overall (weighted)** | **0.625** | **0.540** | **0.710** |
+
+Raw judge prompts and raw model outputs for all 10 calls (5 criteria × 2
+personas) are saved in `outputs/judge_only_result.json` under each
+criterion's `by_persona[*].prompt` and `by_persona[*].raw_output`.
 
 (A separate two-query batch run that exercises `python main.py --mode
 evaluate` end-to-end is included in `outputs/evaluation_20260511_115350.json`;
