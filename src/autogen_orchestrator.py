@@ -16,6 +16,9 @@ import asyncio
 from typing import Dict, Any, List, Optional
 
 from src.agents.autogen_agents import create_research_team
+from src.guardrails.safety_manager import SafetyManager
+from src.tools.web_search import WebSearchTool
+from src.tools.paper_search import PaperSearchTool
 
 
 class AutoGenOrchestrator:
@@ -37,12 +40,15 @@ class AutoGenOrchestrator:
         self.config = config
         self.logger = logging.getLogger("autogen_orchestrator")
         
+        # Safety manager runs input/output guardrails around the team.
+        self.safety_manager = SafetyManager(config)
+
         # Create the research team
         self.logger.info("Creating research team...")
         self.team = create_research_team(config)
-        
+
         self.logger.info("Research team created successfully")
-        
+
         # Workflow trace for debugging and UI display
         self.workflow_trace: List[Dict[str, Any]] = []
 
@@ -62,7 +68,32 @@ class AutoGenOrchestrator:
             - metadata: Additional information about the process
         """
         self.logger.info(f"Processing query: {query}")
-        
+
+        # ----- Input guardrail -----
+        input_check = self.safety_manager.check_input_safety(query)
+        safety_events: List[Dict[str, Any]] = []
+        if input_check.get("event"):
+            safety_events.append(input_check["event"])
+        if not input_check["safe"]:
+            refusal = self.safety_manager.on_violation.get(
+                "message",
+                "I cannot process this request due to safety policies.",
+            )
+            self.logger.warning("Input refused by guardrail")
+            return {
+                "query": query,
+                "response": refusal,
+                "conversation_history": [],
+                "metadata": {
+                    "num_messages": 0,
+                    "num_sources": 0,
+                    "agents_involved": [],
+                    "safety_events": safety_events,
+                    "safety_action": input_check["action"],
+                    "refused": True,
+                },
+            }
+
         try:
             # Run the async query processing
             loop = asyncio.get_event_loop()
@@ -76,7 +107,20 @@ class AutoGenOrchestrator:
                     ).result()
             else:
                 result = loop.run_until_complete(self._process_query_async(query, max_rounds))
-            
+
+            # ----- Output guardrail -----
+            output_check = self.safety_manager.check_output_safety(
+                result.get("response", ""),
+                sources=result.get("metadata", {}).get("sources", []),
+            )
+            if output_check.get("event"):
+                safety_events.append(output_check["event"])
+            result["response"] = output_check["response"]
+            md = result.setdefault("metadata", {})
+            md["safety_events"] = safety_events
+            md["safety_action"] = output_check["action"]
+            md["refused"] = not output_check["safe"] and output_check["action"] == "refuse"
+
             self.logger.info("Query processing complete")
             return result
             
@@ -101,39 +145,91 @@ class AutoGenOrchestrator:
         Returns:
             Dictionary containing results
         """
-        # Create task message
+        # Pre-fetch evidence (tools must be invoked here because the class
+        # vLLM endpoint does not support automatic tool calling). We await
+        # the async tools directly to avoid nested asyncio.run().
+        tools_cfg = self.config.get("tools", {})
+        web_max = tools_cfg.get("web_search", {}).get("max_results", 5)
+        paper_max = tools_cfg.get("paper_search", {}).get("max_results", 5)
+        web_provider = tools_cfg.get("web_search", {}).get("provider", "tavily")
+
+        web_evidence = "No web search results found."
+        try:
+            wtool = WebSearchTool(provider=web_provider, max_results=web_max)
+            web_results = await wtool.search(query)
+            if web_results:
+                lines = [f"Found {len(web_results)} web results for '{query}':\n"]
+                for i, r in enumerate(web_results, 1):
+                    lines.append(f"{i}. {r.get('title','')}\n   URL: {r.get('url','')}\n   {r.get('snippet','')}\n")
+                web_evidence = "\n".join(lines)
+        except Exception as e:
+            self.logger.warning(f"web_search failed: {e}")
+
+        paper_evidence = "No academic papers found."
+        try:
+            ptool = PaperSearchTool(max_results=paper_max)
+            papers = await ptool.search(query)
+            if papers:
+                lines = [f"Found {len(papers)} academic papers for '{query}':\n"]
+                for i, p in enumerate(papers, 1):
+                    authors = ", ".join(a.get("name","") for a in p.get("authors", [])[:3])
+                    lines.append(
+                        f"{i}. {p.get('title','')}\n"
+                        f"   Authors: {authors}\n"
+                        f"   Year: {p.get('year','?')} | Citations: {p.get('citation_count',0)}\n"
+                        f"   URL: {p.get('url','')}\n"
+                    )
+                paper_evidence = "\n".join(lines)
+        except Exception as e:
+            self.logger.warning(f"paper_search failed: {e}")
+
         task_message = f"""Research Query: {query}
 
-Please work together to answer this query comprehensively:
-1. Planner: Create a research plan
-2. Researcher: Gather evidence from web and academic sources
-3. Writer: Synthesize findings into a well-cited response
-4. Critic: Evaluate the quality and provide feedback"""
+Pre-fetched WEB EVIDENCE (use these citations in your answer):
+{web_evidence}
+
+Pre-fetched ACADEMIC EVIDENCE (use these citations in your answer):
+{paper_evidence}
+
+Workflow:
+1. Planner: outline an approach for synthesizing the evidence above.
+2. Researcher: pick the most relevant items from the evidence and summarize key findings with URLs.
+3. Writer: produce a structured response with inline citations [Source: Title or URL] and a References section.
+4. Critic: evaluate completeness and citation quality. Conclude with the approval token when satisfied."""
         
         # Run the team
         result = await self.team.run(task=task_message)
         
-        # Extract conversation history
+        # Extract conversation history (result.messages is a regular list in
+        # autogen-agentchat 0.7).
         messages = []
-        async for message in result.messages:
+        for message in result.messages:
             msg_dict = {
-                "source": message.source,
-                "content": message.content if hasattr(message, 'content') else str(message),
+                "source": getattr(message, "source", "Unknown"),
+                "content": getattr(message, "content", str(message)),
             }
             messages.append(msg_dict)
         
-        # Extract final response
+        # Extract final response: prefer the Writer's last message (the
+        # synthesized answer). Fall back to the Critic, then to the last
+        # message overall.
+        import re
+        def _clean(text: str) -> str:
+            # Strip Qwen3 chain-of-thought blocks for user-facing output.
+            text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
+            return text.strip()
+
         final_response = ""
-        if messages:
-            # Get the last message from Writer or Critic
+        for preferred in ("Writer", "Critic"):
             for msg in reversed(messages):
-                if msg.get("source") in ["Writer", "Critic"]:
-                    final_response = msg.get("content", "")
-                    break
-        
-        # If no response found, use the last message
+                if msg.get("source") == preferred:
+                    final_response = _clean(msg.get("content", ""))
+                    if final_response:
+                        break
+            if final_response:
+                break
         if not final_response and messages:
-            final_response = messages[-1].get("content", "")
+            final_response = _clean(messages[-1].get("content", ""))
         
         return self._extract_results(query, messages, final_response)
 
@@ -175,7 +271,9 @@ Please work together to answer this query comprehensively:
         
         # Clean up final response
         if final_response:
-            final_response = final_response.replace("TERMINATE", "").strip()
+            for token in ("APPROVED-RESEARCH-COMPLETE", "TERMINATE"):
+                final_response = final_response.replace(token, "")
+            final_response = final_response.strip()
         
         return {
             "query": query,

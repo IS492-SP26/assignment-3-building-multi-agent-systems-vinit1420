@@ -138,7 +138,7 @@ class SystemEvaluator:
                 # Call orchestrator's process_query method
                 # TODO: YOUR CODE HERE
                 # Need to implement this in their orchestrator
-                response_data = self.orchestrator.process_query(query)
+                response_data = self.orchestrator.process_query(query, max_rounds=4)
                 
                 # If process_query is async, use:
                 # response_data = await self.orchestrator.process_query(query)

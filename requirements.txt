@@ -10,7 +10,7 @@ groq
 openai
 
 guardrails-ai
-nemoguardrails
+# nemoguardrails  # optional; needs C++ build tools on Windows. Custom rule-based guardrails used instead.
 
 tavily-python
 requests

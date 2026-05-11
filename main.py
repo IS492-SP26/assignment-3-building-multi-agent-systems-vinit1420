@@ -27,49 +27,42 @@ def run_web():
     subprocess.run(["streamlit", "run", "src/ui/streamlit_app.py"])
 
 
-async def run_evaluation():
-    """Run system evaluation."""
+async def run_evaluation(queries_path: str = "data/example_queries.json"):
+    """Run full batch evaluation through SystemEvaluator + LLM-as-Judge."""
     import yaml
     from dotenv import load_dotenv
     from src.autogen_orchestrator import AutoGenOrchestrator
-    
-    # Load environment variables
-    load_dotenv()
+    from src.evaluation.evaluator import SystemEvaluator
 
-    # Load config
-    with open("config.yaml", 'r') as f:
+    load_dotenv()
+    with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    # Initialize AutoGen orchestrator
     print("Initializing AutoGen orchestrator...")
     orchestrator = AutoGenOrchestrator(config)
-    
-    # For now, run a simple test query
-    # TODO: Integrate with SystemEvaluator for full evaluation
-    # Suggested implementation:
-    # - Import SystemEvaluator from src/evaluation/evaluator.py
-    # - Load test queries from data/example_queries.json
-    # - Run batch evaluation and print/save the report summary
+
+    print("Initializing evaluator...")
+    evaluator = SystemEvaluator(config, orchestrator=orchestrator)
+
     print("\n" + "=" * 70)
-    print("RUNNING TEST QUERY")
+    print(f"RUNNING BATCH EVALUATION ON {queries_path}")
     print("=" * 70)
-    
-    test_query = "What are the key principles of accessible user interface design?"
-    print(f"\nQuery: {test_query}\n")
-    
-    result = orchestrator.process_query(test_query)
-    
+
+    report = await evaluator.evaluate_system(queries_path)
+
     print("\n" + "=" * 70)
-    print("RESULTS")
+    print("EVALUATION SUMMARY")
     print("=" * 70)
-    print(f"\nResponse:\n{result.get('response', 'No response generated')}")
-    print(f"\nMetadata:")
-    print(f"  - Messages: {result.get('metadata', {}).get('num_messages', 0)}")
-    print(f"  - Sources: {result.get('metadata', {}).get('num_sources', 0)}")
-    
-    print("\n" + "=" * 70)
-    print("Note: Full evaluation with SystemEvaluator can be implemented")
-    print("=" * 70)
+    summary = report.get("summary", {})
+    scores = report.get("scores", {})
+    print(f"Total queries:   {summary.get('total_queries', 0)}")
+    print(f"Successful:      {summary.get('successful', 0)}")
+    print(f"Failed:          {summary.get('failed', 0)}")
+    print(f"Overall avg:     {scores.get('overall_average', 0.0):.3f}\n")
+    print("Per-criterion average scores:")
+    for crit, val in scores.get("by_criterion", {}).items():
+        print(f"  {crit:<22} {val:.3f}")
+    print("\nFull report written to outputs/")
 
 
 def run_autogen():

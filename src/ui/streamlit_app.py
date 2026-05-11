@@ -216,18 +216,25 @@ def display_response(result: Dict[str, Any]):
 
     # Safety events
     safety_events = metadata.get("safety_events", [])
+    refused = metadata.get("refused", False)
+    action = metadata.get("safety_action", "allow")
+    if refused:
+        st.error(f"This response was REFUSED by the safety policy (action={action}).")
+    elif action == "sanitize":
+        st.warning("This response was SANITIZED (e.g. PII redacted) before display.")
     if safety_events:
-        with st.expander("⚠️ Safety Events", expanded=True):
+        with st.expander("🛡️ Safety Events", expanded=refused):
             for event in safety_events:
                 event_type = event.get("type", "unknown")
-                action = event.get("action", "allow")
+                ev_action = event.get("action", "allow")
+                cats = ", ".join(event.get("categories", [])) or "none"
                 violations = event.get("violations", [])
-                st.warning(
-                    f"{event_type.upper()} ({action.upper()}): "
-                    f"{len(violations)} violation(s) detected"
+                st.markdown(
+                    f"**{event_type.upper()}** — action: `{ev_action}` · "
+                    f"categories: `{cats}` · violations: {len(violations)}"
                 )
-                for violation in violations:
-                    st.text(f"  • {violation.get('reason', 'Unknown')}")
+                for v in violations:
+                    st.text(f"  • [{v.get('severity','?')}] {v.get('reason','Unknown')}")
 
     # Agent traces
     if st.session_state.show_traces:
@@ -275,9 +282,13 @@ def display_sidebar():
 
         st.title("📊 Statistics")
 
-        # TODO: Get actual statistics
         st.metric("Total Queries", len(st.session_state.history))
-        st.metric("Safety Events", 0)  # TODO: Get from safety manager
+        # Aggregate safety events across history.
+        total_safety = sum(
+            len(item.get("result", {}).get("metadata", {}).get("safety_events", []))
+            for item in st.session_state.history
+        )
+        st.metric("Safety Events", total_safety)
 
         st.divider()
 
@@ -392,9 +403,16 @@ def main():
     # Safety log (if enabled)
     if st.session_state.show_safety_log:
         st.divider()
-        st.markdown("### 🛡️ Safety Event Log")
-        # TODO: Display safety events from safety manager
-        st.info("No safety events recorded.")
+        st.markdown("### 🛡️ Safety Event Log (this session)")
+        events_flat = []
+        for item in st.session_state.history:
+            for ev in item.get("result", {}).get("metadata", {}).get("safety_events", []):
+                events_flat.append({"query": item.get("query", ""), **ev})
+        if not events_flat:
+            st.info("No safety events recorded yet.")
+        else:
+            for ev in events_flat:
+                st.json(ev, expanded=False)
 
 
 if __name__ == "__main__":

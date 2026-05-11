@@ -1,35 +1,36 @@
 [![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/SEjAoIAq)
-# Multi-Agent Research System - Assignment 3
 
-Starter scaffold for a multi-agent deep-research assistant on HCI topics. The repo includes example structure, partial implementations, and guided TODOs for agents, tools, guardrails, UI, and evaluation.
+# Multi-Agent Research System — Assignment 3
+
+A multi-agent deep-research assistant on HCI topics. Built on AutoGen
+`RoundRobinGroupChat` with a Planner / Researcher / Writer / Critic team,
+input + output safety guardrails, and an LLM-as-a-Judge evaluation that
+uses two independent judge personas across five rubric criteria.
 
 ## Project Structure
 
 ```text
 .
 ├── src/
-│   ├── agents/
-│   │   └── autogen_agents.py          # AutoGen agent creation + tool wiring
-│   ├── autogen_orchestrator.py        # Multi-agent orchestration scaffold
+│   ├── agents/autogen_agents.py          # AutoGen agent + tool wiring
+│   ├── autogen_orchestrator.py           # Multi-agent orchestration + safety wrapping
 │   ├── guardrails/
-│   │   ├── safety_manager.py          # Safety coordination scaffold
-│   │   ├── input_guardrail.py         # Input validation scaffold
-│   │   └── output_guardrail.py        # Output validation scaffold
+│   │   ├── safety_manager.py             # Coordinates input/output checks, logs events
+│   │   ├── input_guardrail.py            # Length / injection / harm / off-topic
+│   │   └── output_guardrail.py           # PII / harmful / bias / grounding
 │   ├── tools/
-│   │   ├── web_search.py              # Tavily / Brave search
-│   │   ├── paper_search.py            # Semantic Scholar search
-│   │   └── citation_tool.py           # Citation formatting utilities
+│   │   ├── web_search.py                 # Tavily / Brave
+│   │   ├── paper_search.py               # Semantic Scholar
+│   │   └── citation_tool.py              # APA / MLA formatter
 │   ├── evaluation/
-│   │   ├── judge.py                   # LLM-as-a-Judge scaffold
-│   │   └── evaluator.py               # Batch evaluation scaffold
+│   │   ├── judge.py                      # 2-persona LLM-as-a-Judge
+│   │   └── evaluator.py                  # Batch evaluation + report
 │   └── ui/
-│       ├── cli.py                     # Interactive CLI
-│       └── streamlit_app.py           # Streamlit web UI
-├── data/
-│   ├── example_queries.json           # Primary evaluation dataset
-│   └── test_queries_sample.json       # Alternate/fallback dataset
-├── docs/
-│   └── TODO_AUDIT_AND_SOLUTIONS.md    # TODO inventory + guidance notes
+│       ├── cli.py                        # Interactive CLI with safety surfacing
+│       └── streamlit_app.py              # Streamlit web UI
+├── data/example_queries.json             # 10 diverse evaluation queries
+├── outputs/                              # Evaluation reports + exported artifacts
+├── logs/                                 # Run + safety logs
 ├── config.yaml
 ├── requirements.txt
 ├── .env.example
@@ -40,92 +41,114 @@ Starter scaffold for a multi-agent deep-research assistant on HCI topics. The re
 ## Setup
 
 ### 1) Prerequisites
-
-- Python 3.9+
+- Python 3.10+
 - `uv` (recommended) or `pip`
 
-### 2) Install dependencies
-
-Using `uv`:
-
+### 2) Install
 ```bash
-uv venv
-source .venv/bin/activate
+uv venv && source .venv/bin/activate
 uv pip install -r requirements.txt
+# On Windows PowerShell: .venv\Scripts\Activate.ps1
 ```
 
-Using `pip`:
-
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3) Configure environment variables
-
+### 3) Configure environment
 ```bash
 cp .env.example .env
 ```
+Fill at least:
+- LLM: `OPENAI_API_KEY` + `OPENAI_BASE_URL` (for the class-provided
+  vLLM endpoint hosting `openai/gpt-oss-20b`), **or** `GROQ_API_KEY`.
+- Search: `TAVILY_API_KEY` (free student tier) or `BRAVE_API_KEY`.
+- Optional: `SEMANTIC_SCHOLAR_API_KEY` for higher paper-search rate limits.
 
-Minimum required keys:
-
-- One model API path:
-  - `OPENAI_API_KEY` (+ `OPENAI_BASE_URL` for vLLM/OpenAI-compatible endpoints), or
-  - `GROQ_API_KEY`
-- One search API:
-  - `TAVILY_API_KEY` or `BRAVE_API_KEY`
-
-Optional:
-
-- `SEMANTIC_SCHOLAR_API_KEY` (recommended for higher paper-search rate limits)
+The judge picks its provider from `config.yaml → models.judge.provider`
+(`vllm` or `openai` use `OPENAI_API_KEY`, `groq` uses `GROQ_API_KEY`).
 
 ## Running
 
-### AutoGen example mode (default)
-
+### Streamlit web UI (recommended for the demo)
 ```bash
-python main.py
-# or
-python main.py --mode autogen
+python main.py --mode web
+# or directly:
+streamlit run src/ui/streamlit_app.py
 ```
+The UI shows agent traces, citations, safety events, and a quality score.
 
-### CLI
-
+### Interactive CLI
 ```bash
 python main.py --mode cli
 ```
 
-### Streamlit web UI
-
+### One-shot example
 ```bash
-python main.py --mode web
-# or
-streamlit run src/ui/streamlit_app.py
+python main.py --mode autogen
 ```
 
-### Batch evaluation scaffold
+### End-to-end evaluation (single command)
+Runs every query in `data/example_queries.json` through the multi-agent
+system and scores each response with the two-persona judge. The full
+report is written to `outputs/evaluation_<timestamp>.json` plus a
+plain-text `evaluation_summary_<timestamp>.txt`.
 
 ```bash
 python main.py --mode evaluate
 ```
 
-By default, this path only runs a simple test query until students complete the evaluation TODOs in `src/evaluation/` and wire them through `main.py`.
+## What's implemented
 
-## Assignment Checklist (What Students Still Need To Complete)
+- **Agents (≥3, with Planner + Researcher):** Planner, Researcher (with
+  `web_search` and `paper_search` tools), Writer, Critic — wired through
+  `RoundRobinGroupChat` with `TextMentionTermination("TERMINATE")`.
+- **Tools:** Tavily / Brave web search, Semantic Scholar paper search,
+  APA + MLA citation formatter.
+- **Safety guardrails:** Rule-based input and output guardrails covering
+  ≥3 policy categories — prompt injection, harmful content, PII, bias,
+  off-topic, factual grounding. The `SafetyManager` runs both
+  pre- and post-generation, logs structured events to
+  `logs/safety_events.log`, and surfaces refusals / sanitizations in
+  both UIs.
+- **LLM-as-a-Judge:** Two independent personas (strict academic reviewer
+  vs. end-user) score all 5 criteria from `config.yaml`. Per-persona
+  scores are reported alongside aggregate to expose disagreement.
+- **UI:** CLI shows safety status and conversation traces. Streamlit
+  shows response, citations, quality score, agent traces, and a
+  per-event safety log.
 
-- [ ] Finalize agent prompts/roles and end-to-end orchestration behavior.
-- [ ] Finish tool integration and evidence formatting.
-- [ ] Complete safety/guardrail logic and connect it to runtime flow.
-- [ ] Surface safety outcomes clearly in the UI.
-- [ ] Finish LLM-as-a-Judge scoring and batch evaluation reporting.
-- [ ] Ensure CLI/web interfaces show traces and citations clearly.
-- [ ] Document reproducible demo steps and representative outputs.
+## Reproducing the demo
 
-## Notes
+```bash
+# 1. install + env
+uv pip install -r requirements.txt
+cp .env.example .env   # then edit .env with your keys
 
-- Some modules are intentionally partial and include TODO markers for students to complete.
-- Use `ASSIGNMENT_INSTRUCTIONS.md` as the primary guide for where each requirement should be implemented.
+# 2. single end-to-end query (writes logs/example.log)
+python main.py --mode autogen
+
+# 3. batch evaluation (writes outputs/evaluation_*.json|.txt)
+python main.py --mode evaluate
+
+# 4. interactive web demo
+python main.py --mode web
+```
+
+Sample artifacts to inspect after a run:
+- `outputs/evaluation_<ts>.json` — full per-query judge scores and raw responses.
+- `outputs/evaluation_summary_<ts>.txt` — human-readable summary.
+- `logs/safety_events.log` — JSON-lines log of every input/output check.
+
+## Guardrail policy summary
+
+| Category            | Where checked | On match (high severity) |
+|---------------------|---------------|---------------------------|
+| `prompt_injection`  | input         | refuse + log              |
+| `harmful_content`   | input/output  | refuse + log              |
+| `pii`               | output        | sanitize (redact) + log   |
+| `bias`              | output        | warn + log                |
+| `off_topic_queries` | input         | warn + log                |
+| `factual_grounding` | output        | warn + log                |
+
+The default action for high-severity violations is configurable via
+`safety.on_violation` in `config.yaml`.
 
 ## References
 

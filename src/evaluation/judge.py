@@ -22,7 +22,6 @@ from typing import Dict, Any, List, Optional
 import logging
 import json
 import os
-from groq import Groq
 
 
 class LLMJudge:
@@ -48,20 +47,63 @@ class LLMJudge:
         self.logger = logging.getLogger("evaluation.judge")
 
         # Load judge model configuration from config.yaml (models.judge)
-        # This includes: provider, name, temperature, max_tokens
         self.model_config = config.get("models", {}).get("judge", {})
 
         # Load evaluation criteria from config.yaml (evaluation.criteria)
-        # Each criterion has: name, weight, description
         self.criteria = config.get("evaluation", {}).get("criteria", [])
-        
-        # Initialize Groq client (similar to what we tried in Lab 5)
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            self.logger.warning("GROQ_API_KEY not found in environment")
-        self.client = Groq(api_key=api_key) if api_key else None
-        
-        self.logger.info(f"LLMJudge initialized with {len(self.criteria)} criteria")
+
+        # Two independent judging perspectives so we satisfy "2+ judge prompts".
+        # The first plays a strict academic reviewer; the second plays an end-user
+        # focused on practical clarity. Each scores the *same* criteria.
+        self.judge_personas = config.get("evaluation", {}).get("personas", [
+            {
+                "name": "academic_reviewer",
+                "system": (
+                    "You are a meticulous academic peer reviewer for an HCI venue. "
+                    "Be strict and grounded. Penalize unsupported claims and missing citations. "
+                    "Always respond in valid JSON."
+                ),
+            },
+            {
+                "name": "end_user",
+                "system": (
+                    "You are an end-user reading a research summary. You care about clarity, "
+                    "concrete examples, and whether the answer addresses your question. "
+                    "Always respond in valid JSON."
+                ),
+            },
+        ])
+
+        # Provider-agnostic client setup.
+        self.provider = self.model_config.get("provider", "groq")
+        self._client = None
+        self._init_client()
+
+        self.logger.info(
+            f"LLMJudge initialized provider={self.provider} criteria={len(self.criteria)} "
+            f"personas={[p['name'] for p in self.judge_personas]}"
+        )
+
+    def _init_client(self):
+        """Initialize an OpenAI-compatible client for the configured provider."""
+        try:
+            if self.provider == "groq":
+                from groq import Groq
+                key = os.getenv("GROQ_API_KEY")
+                if not key:
+                    self.logger.warning("GROQ_API_KEY not set; judge will fail at call time")
+                    return
+                self._client = Groq(api_key=key)
+            else:  # openai or vllm (both use OpenAI-compatible API)
+                from openai import OpenAI
+                key = os.getenv("OPENAI_API_KEY")
+                base_url = os.getenv("OPENAI_BASE_URL") or None
+                if not key:
+                    self.logger.warning("OPENAI_API_KEY not set; judge will fail at call time")
+                    return
+                self._client = OpenAI(api_key=key, base_url=base_url)
+        except Exception as e:
+            self.logger.error(f"Failed to initialize judge client: {e}")
  
     async def evaluate(
         self,
@@ -94,34 +136,49 @@ class LLMJudge:
             "query": query,
             "overall_score": 0.0,
             "criterion_scores": {},
+            "per_persona_scores": {},
             "feedback": [],
         }
 
-        total_weight = sum(c.get("weight", 1.0) for c in self.criteria)
-        weighted_score = 0.0
+        total_weight = sum(c.get("weight", 1.0) for c in self.criteria) or 1.0
 
-        # Evaluate each criterion
+        # Evaluate each criterion under each independent judge persona.
         for criterion in self.criteria:
             criterion_name = criterion.get("name", "unknown")
-            weight = criterion.get("weight", 1.0)
+            persona_scores = {}
+            for persona in self.judge_personas:
+                self.logger.info(f"Judging {criterion_name} as {persona['name']}")
+                score = await self._judge_criterion(
+                    criterion=criterion,
+                    query=query,
+                    response=response,
+                    sources=sources,
+                    ground_truth=ground_truth,
+                    persona=persona,
+                )
+                persona_scores[persona["name"]] = score
 
-            self.logger.info(f"Evaluating criterion: {criterion_name}")
+            # Average across personas for this criterion.
+            mean_score = sum(s.get("score", 0.0) for s in persona_scores.values()) / max(len(persona_scores), 1)
+            results["criterion_scores"][criterion_name] = {
+                "score": mean_score,
+                "by_persona": persona_scores,
+                "criterion": criterion_name,
+            }
 
-            # TODO: Implement actual LLM judging
-            score = await self._judge_criterion(
-                criterion=criterion,
-                query=query,
-                response=response,
-                sources=sources,
-                ground_truth=ground_truth
-            )
+        # Per-persona overall (weighted) so the report can show disagreement.
+        for persona in self.judge_personas:
+            pname = persona["name"]
+            ws = 0.0
+            for criterion in self.criteria:
+                w = criterion.get("weight", 1.0)
+                c_data = results["criterion_scores"][criterion["name"]]
+                ws += c_data["by_persona"][pname].get("score", 0.0) * w
+            results["per_persona_scores"][pname] = ws / total_weight
 
-            results["criterion_scores"][criterion_name] = score
-            weighted_score += score.get("score", 0.0) * weight
-
-        # Calculate overall score
-        results["overall_score"] = weighted_score / total_weight if total_weight > 0 else 0.0
-
+        # Final aggregate = mean of per-persona weighted overall scores.
+        overall_values = list(results["per_persona_scores"].values())
+        results["overall_score"] = sum(overall_values) / len(overall_values) if overall_values else 0.0
         return results
 
     async def _judge_criterion(
@@ -130,7 +187,8 @@ class LLMJudge:
         query: str,
         response: str,
         sources: Optional[List[Dict[str, Any]]],
-        ground_truth: Optional[str]
+        ground_truth: Optional[str],
+        persona: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Judge a single criterion.
@@ -162,7 +220,7 @@ class LLMJudge:
 
         # Call LLM API to get judgment
         try:
-            judgment = await self._call_judge_llm(prompt)
+            judgment = await self._call_judge_llm(prompt, persona=persona)
             score_value, reasoning = self._parse_judgment(judgment)
             
             score = {
@@ -225,46 +283,35 @@ Provide your evaluation in the following JSON format:
 
         return prompt
 
-    async def _call_judge_llm(self, prompt: str) -> str:
-        """
-        Call LLM API to get judgment.
-        Uses model configuration from config.yaml (models.judge section).
-        """
-        if not self.client:
-            raise ValueError("Groq client not initialized. Check GROQ_API_KEY environment variable.")
-        
+    async def _call_judge_llm(self, prompt: str, persona: Optional[Dict[str, Any]] = None) -> str:
+        """Call configured judge LLM (Groq or OpenAI/vLLM compatible)."""
+        if not self._client:
+            raise ValueError(
+                f"Judge client not initialized for provider={self.provider}. "
+                "Check GROQ_API_KEY or OPENAI_API_KEY in environment."
+            )
+
+        model_name = self.model_config.get("name", "llama-3.1-8b-instant")
+        temperature = self.model_config.get("temperature", 0.3)
+        max_tokens = self.model_config.get("max_tokens", 1024)
+        system_msg = (
+            persona["system"] if persona and "system" in persona
+            else "You are an expert evaluator. Provide your evaluations in valid JSON format."
+        )
+
         try:
-            # Load model settings from config.yaml (models.judge)
-            model_name = self.model_config.get("name", "llama-3.1-8b-instant")
-            temperature = self.model_config.get("temperature", 0.3)
-            max_tokens = self.model_config.get("max_tokens", 1024)
-            
-            self.logger.debug(f"Calling Groq API with model: {model_name}")
-            
-            # Call Groq API (pattern from Lab 5)
-            chat_completion = self.client.chat.completions.create(
+            chat_completion = self._client.chat.completions.create(
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert evaluator. Provide your evaluations in valid JSON format."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt},
                 ],
                 model=model_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            
-            response = chat_completion.choices[0].message.content
-            self.logger.debug(f"Received response: {response[:100]}...")
-            
-            return response
-            
+            return chat_completion.choices[0].message.content
         except Exception as e:
-            self.logger.error(f"Error calling Groq API: {e}")
+            self.logger.error(f"Error calling judge LLM ({self.provider}): {e}")
             raise
 
     def _parse_judgment(self, judgment: str) -> tuple:

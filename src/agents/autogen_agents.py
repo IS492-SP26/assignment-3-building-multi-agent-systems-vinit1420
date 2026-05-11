@@ -69,17 +69,21 @@ def create_model_client(config: Dict[str, Any]) -> OpenAIChatCompletionClient:
         base_url = os.getenv("OPENAI_BASE_URL")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment")
-        
+
+        # NOTE: function_calling=False because the class-hosted vLLM endpoint
+        # does not enable auto tool choice. Tools are executed by the
+        # orchestrator before the team chat and the results are injected
+        # into the Researcher's context as text.
         return OpenAIChatCompletionClient(
             model=model_config.get("name", "gpt-4o-mini"),
             api_key=api_key,
             base_url=base_url,
             model_info={
                 "vision": False,
-                "function_calling": True,
-                "json_output": True,
+                "function_calling": False,
+                "json_output": False,
                 "family": ModelFamily.GPT_4O,
-                "structured_output": True,
+                "structured_output": False,
             },
         )
     
@@ -165,23 +169,13 @@ You have access to tools for web search and paper search. When conducting resear
     else:
         system_message = default_system_message
 
-    # Wrap tools in FunctionTool
-    web_search_tool = FunctionTool(
-        web_search,
-        description="Search the web for articles, blog posts, and general information. Returns formatted search results with titles, URLs, and snippets."
-    )
-    
-    paper_search_tool = FunctionTool(
-        paper_search,
-        description="Search academic papers on Semantic Scholar. Returns papers with authors, abstracts, citation counts, and URLs. Use year_from parameter to filter recent papers."
-    )
-
-    # Create the researcher with tool access
+    # The Researcher does not call tools live (vLLM endpoint has no auto tool
+    # calling). Instead the orchestrator pre-fetches evidence and provides it
+    # in the task message; the Researcher analyzes and summarizes it.
     researcher = AssistantAgent(
         name="Researcher",
         model_client=model_client,
-        tools=[web_search_tool, paper_search_tool],
-        description="Gathers evidence from web and academic sources using search tools",
+        description="Analyzes pre-fetched web and academic evidence and summarizes findings",
         system_message=system_message,
     )
     
@@ -260,7 +254,7 @@ Evaluate the research and writing on these criteria:
 4. **Accuracy**: Are there any factual errors or contradictions?
 5. **Clarity**: Is the writing clear and well-organized?
 
-Provide constructive but thorough feedback. End your evaluation with either "TERMINATE" if approved, or suggest specific improvements."""
+Provide constructive but thorough feedback. End your evaluation with either the exact token APPROVED-RESEARCH-COMPLETE if approved, or suggest specific improvements."""
 
     # Use custom prompt from config if available
     custom_prompt = agent_config.get("system_prompt", "")
@@ -298,8 +292,8 @@ def create_research_team(config: Dict[str, Any]) -> RoundRobinGroupChat:
     writer = create_writer_agent(config, model_client)
     critic = create_critic_agent(config, model_client)
     
-    # Create termination condition
-    termination = TextMentionTermination("TERMINATE")
+    # Use a distinctive termination token that won't appear in the task message.
+    termination = TextMentionTermination("APPROVED-RESEARCH-COMPLETE") | TextMentionTermination("TERMINATE")
     
     # Create team with round-robin ordering
     team = RoundRobinGroupChat(
