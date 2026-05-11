@@ -315,22 +315,21 @@ Provide your evaluation in the following JSON format:
             raise
 
     def _parse_judgment(self, judgment: str) -> tuple:
-        """
-        Parse LLM judgment response.
-        
-        """
+        """Parse LLM judgment, tolerating <think> blocks and surrounding prose."""
+        import re
         try:
-            # Clean up the response - remove markdown code blocks if present
             judgment_clean = judgment.strip()
-            if judgment_clean.startswith("```json"):
-                judgment_clean = judgment_clean[7:]
-            elif judgment_clean.startswith("```"):
-                judgment_clean = judgment_clean[3:]
-            if judgment_clean.endswith("```"):
-                judgment_clean = judgment_clean[:-3]
-            judgment_clean = judgment_clean.strip()
+            # Strip Qwen3-style chain-of-thought
+            judgment_clean = re.sub(r"<think>.*?</think>", "", judgment_clean, flags=re.S).strip()
+            # Strip markdown code fences
+            judgment_clean = re.sub(r"^```(?:json)?\s*", "", judgment_clean)
+            judgment_clean = re.sub(r"\s*```$", "", judgment_clean).strip()
+            # Extract the first {...} JSON object if extra prose is present.
+            if not judgment_clean.startswith("{"):
+                m = re.search(r"\{.*\}", judgment_clean, flags=re.S)
+                if m:
+                    judgment_clean = m.group(0)
 
-            # Parse JSON
             result = json.loads(judgment_clean)
             score = float(result.get("score", 0.0))
             reasoning = result.get("reasoning", "")
