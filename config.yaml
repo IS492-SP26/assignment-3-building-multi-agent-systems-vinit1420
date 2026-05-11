@@ -80,12 +80,12 @@ tools:
   web_search:
     enabled: true
     provider: "tavily"  # or "brave"
-    max_results: 5
+    max_results: 3
 
   paper_search:
     enabled: true
     provider: "semantic_scholar"
-    max_results: 10
+    max_results: 4
 
   citation_extraction:
     enabled: true

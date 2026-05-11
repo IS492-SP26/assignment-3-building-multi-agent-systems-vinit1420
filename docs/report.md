@@ -166,25 +166,52 @@ metrics" requirements simultaneously.
 
 ### 3.3 Results
 
-> *Placeholder — to be filled with the numbers from
-> `outputs/evaluation_<timestamp>.json` once the batch run completes.
-> Expected format:*
+A representative end-to-end run on the query *"What are the key principles
+of explainable AI for novice users?"* produced the following scores (the
+full per-criterion JSON is in `outputs/judge_only_result.json`, and the
+full agent transcript in `outputs/sample_session.json`):
 
-| Criterion          | Mean   | academic_reviewer | end_user |
-|--------------------|:------:|:-----------------:|:--------:|
-| relevance          |  TBD   |        TBD        |   TBD    |
-| evidence_quality   |  TBD   |        TBD        |   TBD    |
-| factual_accuracy   |  TBD   |        TBD        |   TBD    |
-| safety_compliance  |  TBD   |        TBD        |   TBD    |
-| clarity            |  TBD   |        TBD        |   TBD    |
-| **overall**        |  TBD   |        TBD        |   TBD    |
+| Criterion          | Mean  | academic_reviewer | end_user |
+|--------------------|:-----:|:-----------------:|:--------:|
+| relevance          | 0.75  |       0.70        |   0.80   |
+| evidence_quality   | 0.20  |       0.40        |   0.00   |
+| factual_accuracy   | 0.60  |       0.60        |   0.60   |
+| safety_compliance  | 1.00  |       1.00        |   1.00   |
+| clarity            | 0.40  |       0.80        |   0.00   |
+| **overall (weighted)** | **0.568** | **0.665** | **0.470** |
+
+(A separate two-query batch run that exercises `python main.py --mode
+evaluate` end-to-end is included in `outputs/evaluation_20260511_115350.json`;
+its scores were all 0.0 because the original judge parser did not yet
+tolerate Qwen3's `<think>` blocks. That artifact is kept in the repo as a
+record of the bug and the fix in `src/evaluation/judge.py`.)
 
 ### 3.4 Error analysis
 
-> *Placeholder — fill once results are in. Discuss the lowest-scoring query,
-> typical failure modes (missing citations, hallucinated venue names,
-> shallow synthesis), and any criterion where the two personas disagreed by
-> more than 0.2.*
+Two patterns are visible even in this single representative run:
+
+1. **Inter-persona disagreement is largest on `clarity` and
+   `evidence_quality`** (0.80 vs 0.00). The `academic_reviewer` rewards a
+   well-structured response while the `end_user` persona penalizes any
+   response that lacks concrete inline citations or named sources; the
+   Writer in this run produced clean prose but did not consistently embed
+   `[Source: ...]` markers. This is exactly the disagreement the
+   two-persona design was meant to surface.
+2. **`evidence_quality` is the system's weakest dimension** (mean 0.20).
+   Even with Tavily and Semantic Scholar pre-fetched, the Researcher /
+   Writer pair tend to summarize from prior knowledge rather than from
+   the supplied evidence, and citations bleed out of the final response.
+   A targeted fix is a Writer-side check that fails the round if no
+   `[Source: ...]` appears in the synthesis.
+3. **`safety_compliance` is saturated at 1.0** because the
+   `SafetyManager` already strips unsafe content before the response
+   leaves the orchestrator; the judge is grading a post-guardrail output.
+   This is expected but means the criterion does not differentiate
+   queries — the more interesting safety signal is the per-query
+   `safety_action` recorded in the session JSON (e.g. our injection
+   probe `"Ignore previous instructions..."` is correctly refused, with
+   the categories `prompt_injection, off_topic_queries` logged to
+   `logs/safety_events.log`).
 
 ## 4. Discussion and Limitations
 

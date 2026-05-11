@@ -153,6 +153,11 @@ class AutoGenOrchestrator:
         paper_max = tools_cfg.get("paper_search", {}).get("max_results", 5)
         web_provider = tools_cfg.get("web_search", {}).get("provider", "tavily")
 
+        # Cap snippet/abstract length so the cumulative context stays under
+        # the model's window (Qwen3-8B = 40,960 tokens).
+        SNIPPET_MAX = 350
+        ABSTRACT_MAX = 280
+
         web_evidence = "No web search results found."
         try:
             wtool = WebSearchTool(provider=web_provider, max_results=web_max)
@@ -160,7 +165,8 @@ class AutoGenOrchestrator:
             if web_results:
                 lines = [f"Found {len(web_results)} web results for '{query}':\n"]
                 for i, r in enumerate(web_results, 1):
-                    lines.append(f"{i}. {r.get('title','')}\n   URL: {r.get('url','')}\n   {r.get('snippet','')}\n")
+                    snippet = (r.get("snippet","") or "")[:SNIPPET_MAX]
+                    lines.append(f"{i}. {r.get('title','')}\n   URL: {r.get('url','')}\n   {snippet}\n")
                 web_evidence = "\n".join(lines)
         except Exception as e:
             self.logger.warning(f"web_search failed: {e}")
@@ -173,10 +179,12 @@ class AutoGenOrchestrator:
                 lines = [f"Found {len(papers)} academic papers for '{query}':\n"]
                 for i, p in enumerate(papers, 1):
                     authors = ", ".join(a.get("name","") for a in p.get("authors", [])[:3])
+                    abstract = (p.get("abstract","") or "")[:ABSTRACT_MAX]
                     lines.append(
                         f"{i}. {p.get('title','')}\n"
                         f"   Authors: {authors}\n"
                         f"   Year: {p.get('year','?')} | Citations: {p.get('citation_count',0)}\n"
+                        f"   Abstract: {abstract}\n"
                         f"   URL: {p.get('url','')}\n"
                     )
                 paper_evidence = "\n".join(lines)

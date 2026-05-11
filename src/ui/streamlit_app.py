@@ -339,12 +339,20 @@ def main():
     # Main area
     col1, col2 = st.columns([2, 1])
 
+    # If an example was selected on the previous run, apply it BEFORE the
+    # text_area widget is created (Streamlit forbids writing widget-keyed
+    # session state after widget instantiation).
+    if "pending_example" in st.session_state:
+        st.session_state.query_text = st.session_state.pop("pending_example")
+    if "query_text" not in st.session_state:
+        st.session_state.query_text = ""
+
     with col1:
-        # Query input
         query = st.text_area(
             "Enter your research query:",
             height=100,
-            placeholder="e.g., What are the latest developments in explainable AI for novice users?"
+            key="query_text",
+            placeholder="e.g., What are the latest developments in explainable AI for novice users?",
         )
 
         # Submit button
@@ -379,15 +387,11 @@ def main():
             "What are ethical considerations in AI for education?",
         ]
 
-        for example in examples:
-            if st.button(example, use_container_width=True):
-                st.session_state.example_query = example
+        for i, example in enumerate(examples):
+            if st.button(example, use_container_width=True, key=f"example_{i}"):
+                # Apply on the NEXT run (before text_area is rendered).
+                st.session_state.pending_example = example
                 st.rerun()
-
-        # If example was clicked, populate the text area
-        if 'example_query' in st.session_state:
-            st.info(f"Example query selected: {st.session_state.example_query}")
-            del st.session_state.example_query
 
         st.divider()
 
