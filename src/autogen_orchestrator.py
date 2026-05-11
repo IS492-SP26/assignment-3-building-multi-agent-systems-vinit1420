@@ -43,11 +43,12 @@ class AutoGenOrchestrator:
         # Safety manager runs input/output guardrails around the team.
         self.safety_manager = SafetyManager(config)
 
-        # Create the research team
-        self.logger.info("Creating research team...")
-        self.team = create_research_team(config)
-
-        self.logger.info("Research team created successfully")
+        # NOTE: the team is rebuilt per query inside _process_query_async,
+        # because AutoGen binds internal asyncio queues to the event loop in
+        # which the team was created. Streamlit reruns the script and uses a
+        # different loop per click, which would otherwise raise
+        # "Queue bound to a different event loop".
+        self.team = None
 
         # Workflow trace for debugging and UI display
         self.workflow_trace: List[Dict[str, Any]] = []
@@ -205,8 +206,10 @@ Workflow:
 3. Writer: produce a structured response with inline citations [Source: Title or URL] and a References section.
 4. Critic: evaluate completeness and citation quality. Conclude with the approval token when satisfied."""
         
-        # Run the team
-        result = await self.team.run(task=task_message)
+        # Build the team in *this* event loop so its internal queues bind
+        # correctly. Required for the Streamlit UI path.
+        team = create_research_team(self.config)
+        result = await team.run(task=task_message)
         
         # Extract conversation history (result.messages is a regular list in
         # autogen-agentchat 0.7).
